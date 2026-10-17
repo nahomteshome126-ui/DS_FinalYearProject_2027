@@ -4,5 +4,6 @@
         "reportMissingImports": "none",
         "reportUndefinedVariable": "none",
         "reportAttributeAccessIssue": "none"
-    }
+    },
+    "jupyter.askForKernelRestart": false
 }
