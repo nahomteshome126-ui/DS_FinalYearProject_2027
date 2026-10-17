@@ -16,7 +16,7 @@ import os
 from collections import deque
 from typing import Dict, List, Tuple, Any
 
-import numpy as np
+import numpy as np  # type: ignore
 # Setup Visualization
 try:
     import matplotlib  # type: ignore
