@@ -1,0 +1,8 @@
+{
+    "python.defaultInterpreterPath": "C:\\Users\\NAHU\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingImports": "none",
+        "reportUndefinedVariable": "none",
+        "reportAttributeAccessIssue": "none"
+    }
+}

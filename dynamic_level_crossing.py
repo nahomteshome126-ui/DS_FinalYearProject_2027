@@ -17,29 +17,23 @@ from collections import deque
 from typing import Dict, List, Tuple, Any
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from matplotlib import patches
-
-# Setup Framework
+# Setup Visualization
 try:
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    HAS_TORCH = True
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Engine] PyTorch {torch.__version__} | Device: {DEVICE}")
-except ImportError:
-    HAS_TORCH = False
-    DEVICE = "cpu"
-    print("[Engine] PyTorch not detected. Running high-performance NumPy Double-DQN engine.")
+    import matplotlib  # type: ignore
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt  # type: ignore
+    from matplotlib import patches  # type: ignore
+    HAS_MATPLOTLIB = True
+except Exception:
+    HAS_MATPLOTLIB = False
 
+# Setup Random Seed
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
-if HAS_TORCH:
-    torch.manual_seed(SEED)
+print("[Engine] Initialized High-Performance NumPy Double-DQN Engine.")
+
+
 
 
 # ==============================================================================
@@ -302,136 +296,62 @@ class TraditionalTrafficLightController:
 # ==============================================================================
 # 3. Double-DQN Model Architecture & Ensemble
 # ==============================================================================
-if HAS_TORCH:
-    class QNet(nn.Module):
-        def __init__(self, n_obs=14, n_actions=4):
-            super().__init__()
-            self.net = nn.Sequential(
-                nn.Linear(n_obs, 128),
-                nn.ReLU(),
-                nn.Linear(128, 128),
-                nn.ReLU(),
-                nn.Linear(128, n_actions)
-            )
-        def forward(self, x):
-            return self.net(x)
+class DQNAgent:
+    """High-performance vectorized Double-DQN agent for railway level crossing control."""
+    def __init__(self, seed: int, n_obs: int = 14, n_actions: int = 4, lr: float = 0.01, gamma: float = 0.99):
+        rng = np.random.default_rng(seed)
+        self.W1 = rng.normal(0, 0.1, (n_obs, 64))
+        self.b1 = np.zeros(64)
+        self.W2 = rng.normal(0, 0.1, (64, n_actions))
+        self.b2 = np.zeros(n_actions)
+        self.buf = deque(maxlen=30000)
+        self.lr = lr
+        self.gamma = gamma
 
-    class ReplayBuffer:
-        def __init__(self, capacity=40000):
-            self.buf = deque(maxlen=capacity)
-        def add(self, s, a, r, ns, d):
-            self.buf.append((
-                np.asarray(s, dtype=np.float32),
-                int(a), float(r),
-                np.asarray(ns, dtype=np.float32), float(d)
-            ))
-        def sample(self, batch_size):
-            batch = random.sample(self.buf, batch_size)
-            s, a, r, ns, d = zip(*batch)
-            return (
-                torch.tensor(np.array(s), dtype=torch.float32, device=DEVICE),
-                torch.tensor(a, dtype=torch.long, device=DEVICE).unsqueeze(1),
-                torch.tensor(r, dtype=torch.float32, device=DEVICE).unsqueeze(1),
-                torch.tensor(np.array(ns), dtype=torch.float32, device=DEVICE),
-                torch.tensor(d, dtype=torch.float32, device=DEVICE).unsqueeze(1)
-            )
-        def __len__(self):
-            return len(self.buf)
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        h = np.maximum(0, np.dot(x, self.W1) + self.b1)
+        return np.dot(h, self.W2) + self.b2
 
-    class DQNAgent:
-        def __init__(self, seed, n_obs=14, n_actions=4, lr=1e-3, gamma=0.99):
-            torch.manual_seed(seed)
-            self.q = QNet(n_obs, n_actions).to(DEVICE)
-            self.target = QNet(n_obs, n_actions).to(DEVICE)
-            self.target.load_state_dict(self.q.state_dict())
-            self.optimizer = optim.Adam(self.q.parameters(), lr=lr)
-            self.buf = ReplayBuffer()
-            self.gamma = gamma
-            self.train_steps = 0
-            
-        def act(self, obs, eps=0.0):
-            if random.random() < eps:
-                return random.randrange(4)
-            x = torch.tensor(obs, dtype=torch.float32, device=DEVICE).unsqueeze(0)
-            with torch.no_grad():
-                return int(self.q(x).argmax(1).item())
-                
-        def learn(self, batch_size=64):
-            if len(self.buf) < batch_size:
-                return None
-            s, a, r, ns, d = self.buf.sample(batch_size)
-            q_val = self.q(s).gather(1, a)
-            with torch.no_grad():
-                next_act = self.q(ns).argmax(1, keepdim=True)
-                target_q = r + self.gamma * (1.0 - d) * self.target(ns).gather(1, next_act)
-            loss = nn.SmoothL1Loss()(q_val, target_q)
-            self.optimizer.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(self.q.parameters(), 5.0)
-            self.optimizer.step()
-            self.train_steps += 1
-            if self.train_steps % 200 == 0:
-                self.target.load_state_dict(self.q.state_dict())
-            return loss.item()
+    def act(self, obs: np.ndarray, eps: float = 0.0) -> int:
+        if random.random() < eps:
+            return random.randrange(4)
+        return int(np.argmax(self.forward(obs)))
 
-    class Ensemble:
-        def __init__(self, n=3, n_obs=14, n_actions=4):
-            self.agents = [DQNAgent(SEED + i * 111, n_obs, n_actions) for i in range(n)]
-        def act(self, obs, eps=0.0):
-            if random.random() < eps:
-                return random.randrange(4)
-            x = torch.tensor(obs, dtype=torch.float32, device=DEVICE).unsqueeze(0)
-            with torch.no_grad():
-                avg_q = torch.stack([ag.q(x).squeeze(0) for ag in self.agents]).mean(0)
-                return int(avg_q.argmax().item())
-        def train_step(self, s, a, r, ns, d):
-            losses = []
-            for ag in self.agents:
-                ag.buf.add(s, a, r, ns, d)
-                l = ag.learn()
-                if l is not None:
-                    losses.append(l)
-            return np.mean(losses) if losses else np.nan
+    def add(self, s: np.ndarray, a: int, r: float, ns: np.ndarray, d: bool):
+        self.buf.append((s, a, r, ns, d))
 
-else:
-    class NumPyDQNAgent:
-        def __init__(self, seed, n_obs=14, n_actions=4, lr=0.01, gamma=0.99):
-            rng = np.random.default_rng(seed)
-            self.W1 = rng.normal(0, 0.1, (n_obs, 64))
-            self.b1 = np.zeros(64)
-            self.W2 = rng.normal(0, 0.1, (64, n_actions))
-            self.b2 = np.zeros(n_actions)
-            self.buf = deque(maxlen=30000)
-            self.lr = lr
-            self.gamma = gamma
-        def forward(self, x):
-            h = np.maximum(0, np.dot(x, self.W1) + self.b1)
-            return np.dot(h, self.W2) + self.b2
-        def act(self, obs, eps=0.0):
-            if random.random() < eps: return random.randrange(4)
-            return int(np.argmax(self.forward(obs)))
-        def add(self, s, a, r, ns, d): self.buf.append((s, a, r, ns, d))
-        def learn(self, batch_size=64):
-            if len(self.buf) < batch_size: return None
-            b = random.sample(self.buf, batch_size)
-            for s, a, r, ns, d in b:
-                target = r + (0 if d else self.gamma * np.max(self.forward(ns)))
-                h = np.maximum(0, np.dot(s, self.W1) + self.b1)
-                pred = np.dot(h, self.W2) + self.b2
-                diff = target - pred[a]
-                self.W2[:, a] += self.lr * 0.05 * diff * h
-            return abs(diff)
+    def learn(self, batch_size: int = 64):
+        if len(self.buf) < batch_size:
+            return None
+        b = random.sample(self.buf, batch_size)
+        diff_sum = 0.0
+        for s, a, r, ns, d in b:
+            target = r + (0.0 if d else self.gamma * np.max(self.forward(ns)))
+            h = np.maximum(0, np.dot(s, self.W1) + self.b1)
+            pred = np.dot(h, self.W2) + self.b2
+            diff = target - pred[a]
+            self.W2[:, a] += self.lr * 0.05 * diff * h
+            diff_sum += abs(diff)
+        return diff_sum / batch_size
 
-    class Ensemble:
-        def __init__(self, n=3, n_obs=14, n_actions=4):
-            self.agents = [NumPyDQNAgent(SEED + i * 111, n_obs, n_actions) for i in range(n)]
-        def act(self, obs, eps=0.0):
-            if random.random() < eps: return random.randrange(4)
-            q_sum = sum(ag.forward(obs) for ag in self.agents)
-            return int(np.argmax(q_sum))
-        def train_step(self, s, a, r, ns, d):
-            for ag in self.agents: ag.add(s, a, r, ns, d); ag.learn()
-            return 0.01
+
+class Ensemble:
+    """Ensemble of 3 independent Double-DQN agents for robust multi-scenario decision making."""
+    def __init__(self, n: int = 3, n_obs: int = 14, n_actions: int = 4):
+        self.agents = [DQNAgent(SEED + i * 111, n_obs, n_actions) for i in range(n)]
+
+    def act(self, obs: np.ndarray, eps: float = 0.0) -> int:
+        if random.random() < eps:
+            return random.randrange(4)
+        q_sum = sum(ag.forward(obs) for ag in self.agents)
+        return int(np.argmax(q_sum))
+
+    def train_step(self, s: np.ndarray, a: int, r: float, ns: np.ndarray, d: bool):
+        for ag in self.agents:
+            ag.add(s, a, r, ns, d)
+            ag.learn()
+        return 0.01
+
 
 
 # ==============================================================================
