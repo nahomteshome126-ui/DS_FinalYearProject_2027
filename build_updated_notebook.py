@@ -183,7 +183,7 @@ In this environment:
     ACTIONS = {0: "STRONG BRAKE", 1: "BRAKE", 2: "MAINTAIN", 3: "ACCELERATE"}
     ACTION_ACCELS = {0: -6.0, 1: -3.3, 2: 0.0, 3: 2.4}
     
-    def __init__(self, seed=None, scenario=None, max_steps=320, safe_margin_threshold=2.5):
+    def __init__(self, seed=None, scenario=None, max_steps=320, safe_margin_threshold=3.0):
         self.rng = np.random.default_rng(seed)
         self.max_steps = max_steps
         self.dt = 0.1
@@ -254,8 +254,9 @@ In this environment:
         
         # Car distance to completely clear crossing zone (x > 12)
         d_car_clear = max(0.0, 12.0 - self.vehicle_x)
-        # Time for car to clear considering current speed and minimum speed floor
-        t_car_clear = d_car_clear / max(self.vehicle_v, 0.5) if self.vehicle_x < 12.0 else 0.0
+        # Account for road roughness/bump on uneven road:
+        v_eff = max(self.vehicle_v - (1.2 if self.road_type == "uneven" else 0.0), 0.5)
+        t_car_clear = d_car_clear / v_eff if self.vehicle_x < 12.0 else 0.0
         
         # Kinematic Safety Margin: positive = car clears ahead of train
         if train_cleared:
@@ -269,7 +270,7 @@ In this environment:
         traditional_red = (self.train_x <= self.traditional_trigger_dist and not train_cleared)
         
         # Smart dynamic decision: Car has safe opportunity to pass if margin exceeds safe buffer
-        has_pass_opportunity = (j_margin >= self.safe_margin_threshold and self.train_x > 20.0 and not train_occupying)
+        has_pass_opportunity = (j_margin >= self.safe_margin_threshold and self.train_x > 25.0 and not train_occupying)
         
         return {
             "d_train": d_train,
@@ -319,8 +320,8 @@ In this environment:
         # If car cannot safely clear before train and remaining space is within stopping zone
         if self.vehicle_x < -12.0:
             if not k["has_pass_opportunity"] and (k["traditional_red"] or k["train_occupying"]):
-                if d_to_stop < (stopping_dist + 3.0) and action in (2, 3):
-                    return 0  # Force STRONG BRAKE to halt behind stop line
+                if d_to_stop < (stopping_dist + 5.0) and action in (2, 3):
+                    return 0  # Force STRONG BRAKE to halt behind stop line with 5m buffer
         else:
             # If vehicle already entered crossing, it must NOT stop on tracks!
             if action in (0, 1) and not self.collision:
@@ -407,7 +408,11 @@ In this environment:
         if self.cleared:
             reward += 80.0 + min(self.vehicle_v, 15.0) * 0.4
             if self.passed_under_traditional_red:
-                reward += 40.0  # Big bonus for successfully solving traditional red-light delay!
+                # Useful +40 reward: Awarded only when crossing with verified safe margin; penalize near-misses
+                if k_before["j_margin"] >= 3.0:
+                    reward += 40.0  # Big bonus for successfully solving traditional red-light delay!
+                elif k_before["j_margin"] < 2.0:
+                    reward -= 50.0  # Severe penalty for dangerous near-miss (<2.0s margin)
         if self.collision:
             reward -= 200.0
         if self.stuck:
@@ -849,7 +854,9 @@ The live animated demo renders:
         w1.center = (vx - 3.5, y - 1)
         w2.center = (vx + 3.5, y - 1)
         
-        ty = 50.0 - (430.0 - tx) * 0.16
+        # Physically synchronized train projection
+        scale = 0.22
+        ty = tx * scale
         train.set_xy((-5, ty))
         
         # Signals: Traditional vs Smart

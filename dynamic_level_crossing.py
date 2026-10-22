@@ -43,7 +43,7 @@ class RailwayCrossingEnv:
     ACTIONS = {0: "STRONG BRAKE", 1: "BRAKE", 2: "MAINTAIN", 3: "ACCELERATE"}
     ACTION_ACCELS = {0: -6.0, 1: -3.3, 2: 0.0, 3: 2.4}
     
-    def __init__(self, seed=None, scenario=None, max_steps=320, safe_margin_threshold=2.5):
+    def __init__(self, seed=None, scenario=None, max_steps=320, safe_margin_threshold=3.0):
         self.rng = np.random.default_rng(seed)
         self.max_steps = max_steps
         self.dt = 0.1
@@ -112,7 +112,9 @@ class RailwayCrossingEnv:
         train_occupying = (-100.0 <= self.train_x <= 12.0)
         
         d_car_clear = max(0.0, 12.0 - self.vehicle_x)
-        t_car_clear = d_car_clear / max(self.vehicle_v, 0.5) if self.vehicle_x < 12.0 else 0.0
+        # Terrain-aware speed estimate over speed bumps or incline
+        v_eff = max(self.vehicle_v - (1.2 if self.road_type == "uneven" else 0.0), 0.5)
+        t_car_clear = d_car_clear / v_eff if self.vehicle_x < 12.0 else 0.0
         
         if train_cleared:
             j_margin = 99.0
@@ -122,7 +124,7 @@ class RailwayCrossingEnv:
             j_margin = t_train_eta - t_car_clear
             
         traditional_red = (self.train_x <= self.traditional_trigger_dist and not train_cleared)
-        has_pass_opportunity = (j_margin >= self.safe_margin_threshold and self.train_x > 20.0 and not train_occupying)
+        has_pass_opportunity = (j_margin >= self.safe_margin_threshold and self.train_x > 25.0 and not train_occupying)
         
         return {
             "d_train": d_train,
@@ -170,8 +172,8 @@ class RailwayCrossingEnv:
         
         if self.vehicle_x < -12.0:
             if not k["has_pass_opportunity"] and (k["traditional_red"] or k["train_occupying"]):
-                if d_to_stop < (stopping_dist + 3.0) and action in (2, 3):
-                    return 0  # Force STRONG BRAKE to halt behind stop line
+                if d_to_stop < (stopping_dist + 5.0) and action in (2, 3):
+                    return 0  # Force STRONG BRAKE to halt behind stop line with 5m buffer
         else:
             if action in (0, 1) and not self.collision:
                 return 3  # Accelerate to clear danger zone rapidly
@@ -244,7 +246,11 @@ class RailwayCrossingEnv:
         if self.cleared:
             reward += 80.0 + min(self.vehicle_v, 15.0) * 0.4
             if self.passed_under_traditional_red:
-                reward += 40.0
+                # Useful +40 reward: Awarded only when crossing with verified safe margin; penalize near-misses
+                if k_before["j_margin"] >= 3.0:
+                    reward += 40.0  # Reward verified safe opportunity pass
+                elif k_before["j_margin"] < 2.0:
+                    reward -= 50.0  # Penalize high-risk near-miss under red
         if self.collision:
             reward -= 200.0
         if self.stuck:
